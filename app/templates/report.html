@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}核查结论 #{{ rep.id }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>核查结论 #{{ rep.id }}
+    <span class="badge {{ rep.status }}">{{ '有效' if rep.status == 'valid' else '待复查' }}</span>
+  </h2>
+  <dl class="meta">
+    <dt>入口</dt><dd class="url">{{ rep.entry_url }}</dd>
+    <dt>回看时刻 (UTC)</dt><dd>{{ fmt_us(rep.lookback) }}</dd>
+    <dt>生成时间 (UTC)</dt><dd>{{ fmt_us(rep.created_at) }}</dd>
+    <dt>基于目录批次</dt><dd>≤ #{{ rep.base_batch }}</dd>
+    <dt>已核查页面</dt><dd>{{ rep.visited_count }}</dd>
+    <dt>缺档 URL</dt><dd>{{ rep.missing_count }}</dd>
+  </dl>
+  {% if rep.status == 'needs_recheck' %}
+  <p class="warn">结论生成后，补传改变了本次核查所选的抓存，或为原缺档 URL 补上了可用记录，结论可能已过时，请重新核查。</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('main.recheck', rid=rep.id) }}">
+    <button type="submit">按相同入口与回看时刻重新核查</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>缺档 URL 与到达路径（{{ missing|length }}）</h2>
+  {% if missing %}
+  <table>
+    <thead><tr><th>#</th><th>缺档 URL</th><th>从入口到达的路径</th></tr></thead>
+    <tbody>
+    {% for m in missing %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td class="url">{{ m.url }}</td>
+        <td class="path">
+          {% for step in m.path %}<span class="step url">{{ step }}</span>{{ ' → ' if not loop.last }}{% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="ok">没有缺档：从入口可达的页面均有不晚于回看时刻的抓存。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <details>
+    <summary>已核查页面及所选抓存（{{ resolved|length }}）</summary>
+    <table>
+      <thead><tr><th>URL</th><th>所选抓存时刻 (UTC)</th></tr></thead>
+      <tbody>
+      {% for p in resolved %}
+        <tr><td class="url">{{ p.url }}</td><td>{{ fmt_us(p.captured_at) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</section>
+{% endblock %}

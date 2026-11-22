@@ -1,0 +1,18 @@
+services:
+  web:
+    build: .
+    image: archive-link-checker
+    ports:
+      - "8000:8000"
+    environment:
+      # SQLite 数据库放在挂载卷里，容器重启后结论仍可查
+      ARCHIVE_DB: /data/archive.db
+      SECRET_KEY: ${SECRET_KEY:-please-change-me}
+      # 演示/测试用：核查每处理一页 sleep 的毫秒数，默认 0
+      # CHECK_STEP_DELAY_MS: "0"
+    volumes:
+      - archive_data:/data
+    restart: unless-stopped
+
+volumes:
+  archive_data:

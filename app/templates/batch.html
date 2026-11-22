@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}批次 #{{ b.id }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>批次 #{{ b.id }}
+    {% if b.applied %}<span class="badge valid">已生效</span>
+    {% else %}<span class="badge needs_recheck">已退回</span>{% endif %}
+  </h2>
+  <dl class="meta">
+    <dt>上传时间 (UTC)</dt><dd>{{ fmt_us(b.uploaded_at) }}</dd>
+    <dt>文件名</dt><dd>{{ b.filename }}</dd>
+    <dt>行数</dt><dd>{{ b.row_count }}</dd>
+    {% if b.applied %}<dt>实际入库</dt><dd>{{ total }} 条</dd>{% endif %}
+  </dl>
+  {% if b.error %}<p class="warn">{{ b.error }}</p>{% endif %}
+  {% if conflicts %}
+  <h3>冲突明细（前 {{ conflicts|length }} 处）</h3>
+  <table>
+    <thead><tr><th>URL</th><th>时刻 (UTC)</th><th>既有出链</th><th>本批出链</th></tr></thead>
+    <tbody>
+    {% for c in conflicts %}
+      <tr>
+        <td class="url">{{ c.url }}</td>
+        <td>{{ fmt_us(c.captured_at) }}</td>
+        <td class="url">{{ c.existing|join(' | ') }}</td>
+        <td class="url">{{ c.new|join(' | ') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+{% if b.applied %}
+<section class="card">
+  <h2>本批抓存记录（{{ total }}）</h2>
+  {% if caps %}
+  <table>
+    <thead><tr><th>URL</th><th>抓存时刻 (UTC)</th><th>同站出链</th></tr></thead>
+    <tbody>
+    {% for c in caps %}
+      <tr>
+        <td class="url">{{ c.url }}</td>
+        <td>{{ fmt_us(c.captured_at) }}</td>
+        <td class="url">{{ c.outlinks|join(' | ') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if total > caps|length %}<p class="hint">仅显示前 {{ caps|length }} 条。</p>{% endif %}
+  {% else %}
+  <p class="hint">本批没有新增记录（全部与既有档案完全重复）。</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

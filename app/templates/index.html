@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h2>① 上传抓存目录（CSV）</h2>
+  <form method="post" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
+    <input type="file" name="file" accept=".csv,text/csv" required>
+    <button type="submit">上传并生效</button>
+  </form>
+  <details>
+    <summary>CSV 格式说明</summary>
+    <p>表头须包含 <code>url,captured_at,outlinks</code> 三列：</p>
+    <ul>
+      <li><code>url</code>：页面完整地址（http/https）；</li>
+      <li><code>captured_at</code>：UTC 抓存时刻，如 <code>2023-01-05T08:00:00Z</code>（无时区时按 UTC）；</li>
+      <li><code>outlinks</code>：同站出链（完整 URL），多个用 <code>|</code> 分隔，或用 JSON 数组；无出链留空。</li>
+    </ul>
+    <p>同一 URL 同一时刻若出现与既有档案不同的记录，属冲突，<strong>整批退回</strong>，不产生任何效果；
+    完全相同的记录自动跳过。批次生效的同时，受影响的核查结论会同步标为「待复查」。</p>
+  </details>
+</section>
+
+<section class="card">
+  <h2>② 发起断链核查</h2>
+  <form method="post" action="{{ url_for('main.check') }}" class="check-form">
+    <label>入口 URL
+      <input type="text" name="entry_url" placeholder="http://old.site/" required>
+    </label>
+    <label>回看时刻（UTC）
+      <input type="datetime-local" name="lookback" step="1" required>
+    </label>
+    <button type="submit">开始核查</button>
+  </form>
+  <p class="hint">从入口沿同站出链逐页核查：每个 URL 取不晚于回看时刻的最近一条抓存，互链页面只查一遍。
+  遍历大型档案期间仍可正常上传补传。</p>
+</section>
+
+<section class="card">
+  <h2>核查结论</h2>
+  {% if reports %}
+  <table>
+    <thead>
+      <tr><th>#</th><th>入口</th><th>回看时刻 (UTC)</th><th>状态</th><th>缺档 / 已查</th><th>生成时间 (UTC)</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for r in reports %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td class="url">{{ r.entry_url }}</td>
+        <td>{{ fmt_us(r.lookback) }}</td>
+        <td><span class="badge {{ r.status }}">{{ '有效' if r.status == 'valid' else '待复查' }}</span></td>
+        <td>{{ r.missing_count }} / {{ r.visited_count }}</td>
+        <td>{{ fmt_us(r.created_at) }}</td>
+        <td><a href="{{ url_for('main.report_detail', rid=r.id) }}">查看</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">尚无核查结论。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>目录批次</h2>
+  <p class="hint">档案库现有 {{ stats.urls }} 个 URL、{{ stats.captures }} 条抓存记录。</p>
+  {% if batches %}
+  <table>
+    <thead>
+      <tr><th>#</th><th>上传时间 (UTC)</th><th>文件名</th><th>行数</th><th>结果</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for b in batches %}
+      <tr>
+        <td>{{ b.id }}</td>
+        <td>{{ fmt_us(b.uploaded_at) }}</td>
+        <td>{{ b.filename }}</td>
+        <td>{{ b.row_count }}</td>
+        <td>
+          {% if b.applied %}<span class="badge valid">已生效</span>
+          {% else %}<span class="badge needs_recheck">已退回</span>{% endif %}
+        </td>
+        <td><a href="{{ url_for('main.batch_detail', bid=b.id) }}">详情</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">尚无批次。</p>
+  {% endif %}
+</section>
+{% endblock %}
