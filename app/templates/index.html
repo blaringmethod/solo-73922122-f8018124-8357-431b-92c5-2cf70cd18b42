@@ -62,7 +62,10 @@
 
 <section class="card">
   <h2>目录批次</h2>
-  <p class="hint">档案库现有 {{ stats.urls }} 个 URL、{{ stats.captures }} 条抓存记录。</p>
+  <p class="hint">档案库现有 {{ stats.urls }} 个 URL、{{ stats.captures }} 条抓存记录。
+  {% if payload.full_total %}
+  出链载荷合计 {{ payload.payload }} 字节；若逐版存完整 JSON 需 {{ payload.full_total }} 字节（差量存储节省 {{ payload.saving }}%）。
+  {% endif %}</p>
   {% if batches %}
   <table>
     <thead>

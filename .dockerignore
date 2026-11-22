@@ -5,4 +5,5 @@ instance
 .git
 tests
 sample_data
+scripts
 *.md

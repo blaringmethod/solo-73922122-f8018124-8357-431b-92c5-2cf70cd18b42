@@ -11,6 +11,11 @@
     <dt>文件名</dt><dd>{{ b.filename }}</dd>
     <dt>行数</dt><dd>{{ b.row_count }}</dd>
     {% if b.applied %}<dt>实际入库</dt><dd>{{ total }} 条</dd>{% endif %}
+    {% if payload and payload.full_total %}
+    <dt>出链载荷</dt><dd>{{ payload.payload }} 字节</dd>
+    <dt>逐版完整 JSON</dt><dd>{{ payload.full_total }} 字节</dd>
+    <dt>节省</dt><dd>{{ payload.saving }}%</dd>
+    {% endif %}
   </dl>
   {% if b.error %}<p class="warn">{{ b.error }}</p>{% endif %}
   {% if conflicts %}
@@ -36,13 +41,14 @@
   <h2>本批抓存记录（{{ total }}）</h2>
   {% if caps %}
   <table>
-    <thead><tr><th>URL</th><th>抓存时刻 (UTC)</th><th>同站出链</th></tr></thead>
+    <thead><tr><th>URL</th><th>抓存时刻 (UTC)</th><th>同站出链</th><th>存储</th></tr></thead>
     <tbody>
     {% for c in caps %}
       <tr>
         <td class="url">{{ c.url }}</td>
         <td>{{ fmt_us(c.captured_at) }}</td>
         <td class="url">{{ c.outlinks|join(' | ') }}</td>
+        <td class="hint">{{ c.storage }}</td>
       </tr>
     {% endfor %}
     </tbody>

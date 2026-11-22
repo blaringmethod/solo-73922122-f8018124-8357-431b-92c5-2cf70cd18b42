@@ -1,0 +1,5 @@
+url,captured_at,outlinks
+http://old.site/,2023-01-04T07:00:00Z,http://old.site/about|http://old.site/news
+http://old.site/about,2023-01-04T07:01:00Z,http://old.site/
+http://old.site/news,2023-01-04T07:02:00Z,http://old.site/news/item-1|http://old.site/news/item-2
+http://old.site/news/item-2,2023-01-04T07:03:00Z,

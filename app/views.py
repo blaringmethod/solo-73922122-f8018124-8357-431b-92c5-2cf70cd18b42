@@ -18,19 +18,37 @@ from .db import get_db
 bp = Blueprint("main", __name__)
 
 
+# 出链载荷统计：实际落库的出链字节数 vs 逐版存完整 JSON 的字节数。
+_PAYLOAD_SQL = """
+COALESCE(SUM(LENGTH(outlinks)
+           + LENGTH(COALESCE(delta_add, ''))
+           + LENGTH(COALESCE(delta_remove, ''))), 0) AS payload,
+COALESCE(SUM(full_len), 0) AS full_total
+"""
+
+
+def _payload_stats(row):
+    payload, full = row["payload"], row["full_total"]
+    saving = round((1 - payload / full) * 100, 1) if full else 0.0
+    return {"payload": payload, "full_total": full, "saving": saving}
+
+
 @bp.route("/")
 def index():
     conn = get_db()
     reports = conn.execute("SELECT * FROM reports ORDER BY id DESC LIMIT 200").fetchall()
     batches = conn.execute("SELECT * FROM batches ORDER BY id DESC LIMIT 200").fetchall()
     stats = conn.execute(
-        "SELECT COUNT(*) AS captures, COUNT(DISTINCT url) AS urls FROM captures"
+        "SELECT COUNT(*) AS captures, COUNT(DISTINCT url) AS urls,"
+        + _PAYLOAD_SQL
+        + " FROM captures"
     ).fetchone()
     return render_template(
         "index.html",
         reports=reports,
         batches=batches,
         stats=stats,
+        payload=_payload_stats(stats),
         fmt_us=logic.fmt_us,
     )
 
@@ -76,23 +94,36 @@ def batch_detail(bid):
         abort(404)
     caps = []
     total = 0
+    payload = None
     if b["applied"]:
-        caps = conn.execute(
+        rows = conn.execute(
             "SELECT * FROM captures WHERE batch_id=? ORDER BY url, captured_at LIMIT 500",
             (bid,),
         ).fetchall()
-        caps = [
-            {"url": c["url"], "captured_at": c["captured_at"],
-             "outlinks": json.loads(c["outlinks"])}
-            for c in caps
-        ]
-        total = conn.execute(
-            "SELECT COUNT(*) AS c FROM captures WHERE batch_id=?", (bid,)
-        ).fetchone()["c"]
+        cache = {}
+        for c in rows:
+            # 批次详情始终展示还原后的完整出链
+            links, _ = logic.load_outlinks(conn, c, cache)
+            if c["base_id"] is None:
+                storage = "完整"
+            else:
+                n_add = len(json.loads(c["delta_add"] or "[]"))
+                n_rm = len(json.loads(c["delta_remove"] or "[]"))
+                storage = f"差量 +{n_add}/−{n_rm}（基 #{c['base_id']}）"
+            caps.append(
+                {"url": c["url"], "captured_at": c["captured_at"],
+                 "outlinks": links, "storage": storage}
+            )
+        stats = conn.execute(
+            "SELECT COUNT(*) AS c," + _PAYLOAD_SQL + " FROM captures WHERE batch_id=?",
+            (bid,),
+        ).fetchone()
+        total = stats["c"]
+        payload = _payload_stats(stats)
     conflicts = json.loads(b["detail"]) if b["detail"] else None
     return render_template(
         "batch.html", b=b, caps=caps, total=total, conflicts=conflicts,
-        fmt_us=logic.fmt_us,
+        payload=payload, fmt_us=logic.fmt_us,
     )
 
 

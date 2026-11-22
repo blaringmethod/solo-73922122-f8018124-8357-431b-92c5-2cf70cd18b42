@@ -24,7 +24,12 @@ CREATE TABLE IF NOT EXISTS captures (
     batch_id    INTEGER NOT NULL REFERENCES batches(id),
     url         TEXT NOT NULL,
     captured_at INTEGER NOT NULL,          -- UTC 微秒
-    outlinks    TEXT NOT NULL DEFAULT '[]',-- JSON 数组，排序去重后的同站出链
+    outlinks    TEXT NOT NULL DEFAULT '[]',-- base_id 为 NULL 时：完整出链 JSON；差量行置空
+    base_id     INTEGER,                   -- NULL=完整快照；否则为差量基抓存 id
+    delta_add   TEXT,                      -- 相对基新增的出链 JSON（差量行）
+    delta_remove TEXT,                     -- 相对基移除的出链 JSON（差量行）
+    depth       INTEGER NOT NULL DEFAULT 1,-- 还原需读取的载荷条数（链长，<=8）
+    full_len    INTEGER NOT NULL DEFAULT 0,-- 该版若存完整 JSON 的字节数（统计用）
     UNIQUE (url, captured_at)
 );
 
@@ -71,7 +76,30 @@ def close_db(exception=None):
         conn.close()
 
 
+# 旧库迁移：captures 表补上差量存储所需的列。
+# 旧行 base_id 为 NULL，按完整 JSON 直接读取，无需改写任何既有数据。
+_MIGRATION_STMTS = (
+    "ALTER TABLE captures ADD COLUMN base_id INTEGER",
+    "ALTER TABLE captures ADD COLUMN delta_add TEXT",
+    "ALTER TABLE captures ADD COLUMN delta_remove TEXT",
+    "ALTER TABLE captures ADD COLUMN depth INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE captures ADD COLUMN full_len INTEGER NOT NULL DEFAULT 0",
+    # 旧行都是完整快照，其"逐版完整 JSON 字节数"即 outlinks 长度
+    "UPDATE captures SET full_len = LENGTH(outlinks)",
+)
+
+
+def _migrate(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(captures)")}
+    if "base_id" in cols:
+        return
+    for stmt in _MIGRATION_STMTS:
+        conn.execute(stmt)
+
+
 def init_app(app):
     app.teardown_appcontext(close_db)
     with app.app_context():
-        get_db().executescript(SCHEMA)
+        conn = get_db()
+        conn.executescript(SCHEMA)
+        _migrate(conn)

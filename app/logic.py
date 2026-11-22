@@ -6,6 +6,14 @@
 - 结论落库时在写事务里复查"快照之后新生效的批次"是否影响本结论
   （save_report 中的 REVALIDATE_SQL），保证交错操作不会留下过时的有效结论。
 - 同一 URL 同一时刻、出链不同的记录视为冲突，整批退回，不产生任何效果。
+
+出链差量存储：
+- 同一页面的历次抓存往往只差几条出链，新抓存优先存"相对既有抓存的差量"
+  （base_id + delta_add/delta_remove），基抓存取同 URL 时间相邻、链深未满者。
+- 还原链长（depth）上限 MAX_CHAIN：还原任意一条抓存最多读 MAX_CHAIN 条载荷。
+- 已入库的抓存只插不改：乱序补传旧时点时，已存载荷原样保留。
+- 旧库的抓存行 base_id 为 NULL，即完整快照，可直接被读取、被选作差量基。
+- 重复/冲突判定、核查遍历、批次详情统一经 load_outlinks 还原完整出链。
 """
 import csv
 import io
@@ -143,6 +151,105 @@ def parse_catalog(file_bytes):
     return rows, None
 
 
+# ---------------------------------------------------------------- 出链差量存储
+
+# 还原一条抓存最多读取的载荷条数（差量链长上限）。
+MAX_CHAIN = 8
+
+# 还原出链所需的抓存列。
+CAP_COLS = "id, outlinks, base_id, delta_add, delta_remove, depth"
+
+
+def load_outlinks(conn, row, cache=None):
+    """还原一条抓存的完整出链。
+
+    row 需含 CAP_COLS 各列（完整快照行直接读 outlinks；差量行沿 base_id
+    链回溯到完整快照后逐层套用增删）。cache 可选，{抓存id: 出链集合}，
+    批量还原时共享可避免重复回溯。
+
+    返回 (links, reads)：links 为排序后的完整出链列表；reads 为本次还原
+    实际读取的载荷条数（含 row 本身，不含缓存命中），保证 <= MAX_CHAIN。
+    """
+    chain = []
+    cur = row
+    reads = 1  # row 本身的载荷已由调用者随 SELECT 读出
+    while True:
+        if cur["base_id"] is None:
+            links = set(json.loads(cur["outlinks"] or "[]"))
+            break
+        if cache is not None and cur["id"] in cache:
+            links = set(cache[cur["id"]])
+            break
+        chain.append(cur)
+        if len(chain) >= MAX_CHAIN:
+            raise RuntimeError(f"抓存 #{row['id']} 差量链超过 {MAX_CHAIN} 层，数据损坏")
+        cur = conn.execute(
+            f"SELECT {CAP_COLS} FROM captures WHERE id=?", (cur["base_id"],)
+        ).fetchone()
+        if cur is None:
+            raise RuntimeError(f"抓存 #{row['id']} 的差量基缺失，数据损坏")
+        reads += 1
+    for r in reversed(chain):
+        add = json.loads(r["delta_add"] or "[]")
+        rm = json.loads(r["delta_remove"] or "[]")
+        links = (links - set(rm)) | set(add)
+        if cache is not None:
+            cache[r["id"]] = frozenset(links)
+    return sorted(links), reads
+
+
+def _base_candidates(conn, url, us, per_side=2):
+    """差量基候选：同 URL 中时间相邻（前驱/后继各取 per_side 条）的既有抓存。
+
+    先按时间取最近邻、再过滤链深未满（depth < MAX_CHAIN，再挂一层才不超限）
+    ——顺序不能反：若先在 SQL 里按链深过滤，近邻链满时会无限向远回溯，
+    差量随距离线性膨胀，退化为长链挂满深层。
+    """
+    preds = conn.execute(
+        f"SELECT {CAP_COLS} FROM captures"
+        " WHERE url=? AND captured_at<?"
+        " ORDER BY captured_at DESC, id DESC LIMIT ?",
+        (url, us, per_side),
+    ).fetchall()
+    succs = conn.execute(
+        f"SELECT {CAP_COLS} FROM captures"
+        " WHERE url=? AND captured_at>?"
+        " ORDER BY captured_at ASC, id ASC LIMIT ?",
+        (url, us, per_side),
+    ).fetchall()
+    return [c for c in list(preds) + list(succs) if c["depth"] < MAX_CHAIN]
+
+
+def _insert_capture(conn, batch_id, url, us, links, cache=None):
+    """写入一条抓存：差量载荷严格更小时存差量，否则存完整快照。
+
+    只 INSERT 不 UPDATE——已存抓存（含其差量链）原样保留。
+    """
+    full = json.dumps(links, ensure_ascii=False)
+    link_set = set(links)
+    best = None  # (差量载荷字节数, base_id, delta_add, delta_remove, 新行depth)
+    for cand in _base_candidates(conn, url, us):
+        base_links, _ = load_outlinks(conn, cand, cache)
+        add = json.dumps(sorted(link_set - set(base_links)), ensure_ascii=False)
+        rm = json.dumps(sorted(set(base_links) - link_set), ensure_ascii=False)
+        size = len(add) + len(rm)
+        if best is None or size < best[0]:
+            best = (size, cand["id"], add, rm, cand["depth"] + 1)
+    if best is not None and best[0] < len(full):
+        conn.execute(
+            "INSERT INTO captures(batch_id, url, captured_at, outlinks,"
+            " base_id, delta_add, delta_remove, depth, full_len)"
+            " VALUES (?,?,?,'',?,?,?,?,?)",
+            (batch_id, url, us, best[1], best[2], best[3], best[4], len(full)),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO captures(batch_id, url, captured_at, outlinks,"
+            " base_id, depth, full_len) VALUES (?,?,?,?,NULL,1,?)",
+            (batch_id, url, us, full, len(full)),
+        )
+
+
 # ---------------------------------------------------------------- 批次生效
 
 # 批次生效的同时，把受影响的"有效"结论标为待复查（同一事务）。
@@ -195,14 +302,16 @@ def apply_batch(conn, filename, rows):
     try:
         duplicates = set()
         conflicts = []
+        cache = {}
         for url, us, links in rows:
             r = conn.execute(
-                "SELECT outlinks FROM captures WHERE url=? AND captured_at=?",
+                f"SELECT {CAP_COLS} FROM captures WHERE url=? AND captured_at=?",
                 (url, us),
             ).fetchone()
             if r is None:
                 continue
-            old = json.loads(r["outlinks"])
+            # 与既有档案比对"还原后的"完整出链
+            old, _ = load_outlinks(conn, r, cache)
             if old != links:
                 conflicts.append(
                     {"url": url, "captured_at": us, "existing": old, "new": links}
@@ -236,11 +345,7 @@ def apply_batch(conn, filename, rows):
         for url, us, links in rows:
             if (url, us) in duplicates:
                 continue
-            conn.execute(
-                "INSERT INTO captures(batch_id, url, captured_at, outlinks)"
-                " VALUES (?,?,?,?)",
-                (bid, url, us, json.dumps(links, ensure_ascii=False)),
-            )
+            _insert_capture(conn, bid, url, us, links, cache)
             inserted += 1
         # 目录与结论状态同步生效
         conn.execute(INVALIDATE_SQL, (bid,))
@@ -279,14 +384,16 @@ def run_check(conn, entry_url, lookback_us, step_delay=0.0):
         ).fetchone()[0]
         visited = {}
         missing = {}
+        cache = {}
         queue = deque([(entry_url, [entry_url])])
         enqueued = {entry_url}
         while queue:
             url, path = queue.popleft()
             if url in visited or url in missing:
                 continue
+            # 选档规则不变：不晚于回看时刻的最近一条抓存
             row = conn.execute(
-                "SELECT id, captured_at, outlinks FROM captures"
+                f"SELECT {CAP_COLS}, captured_at FROM captures"
                 " WHERE url=? AND captured_at<=?"
                 " ORDER BY captured_at DESC, id DESC LIMIT 1",
                 (url, lookback_us),
@@ -295,7 +402,8 @@ def run_check(conn, entry_url, lookback_us, step_delay=0.0):
                 missing[url] = path
             else:
                 visited[url] = (row["id"], row["captured_at"])
-                for link in json.loads(row["outlinks"]):
+                links, _ = load_outlinks(conn, row, cache)
+                for link in links:
                     if link not in enqueued and link not in visited and link not in missing:
                         enqueued.add(link)
                         queue.append((link, path + [link]))
